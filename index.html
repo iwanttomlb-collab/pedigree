@@ -1,0 +1,1173 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pedigree Engine</title>
+<style>
+:root{
+  --bg:#f6f6f4; --panel:#ffffff; --ink:#15171a; --muted:#6b7177;
+  --line:#dcdfe3; --accent:#2f5d8a; --accent-soft:#e7eff6;
+  --err:#9c2b2b; --err-bg:#fbeded; --code-bg:#fbfbfa;
+  --radius:8px; --mono:ui-monospace,"Cascadia Mono","Consolas",monospace;
+  --sans:ui-sans-serif,"Segoe UI",system-ui,Arial,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#17191c; --panel:#1f2226; --ink:#e8eaed; --muted:#9aa1a8;
+    --line:#32363c; --accent:#7fb0d9; --accent-soft:#25313d;
+    --err:#ff9c9c; --err-bg:#3a2222; --code-bg:#1a1d20;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#17191c; --panel:#1f2226; --ink:#e8eaed; --muted:#9aa1a8;
+  --line:#32363c; --accent:#7fb0d9; --accent-soft:#25313d;
+  --err:#ff9c9c; --err-bg:#3a2222; --code-bg:#1a1d20;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;
+  display:flex;flex-direction:column;overflow:hidden}
+header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:8px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:14px;font-weight:650;margin:0 10px 0 0;letter-spacing:.2px}
+button,select{font:inherit;font-size:13px;color:var(--ink);background:var(--panel);
+  border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer}
+button:hover,select:hover{border-color:var(--accent)}
+label.chk{display:inline-flex;align-items:center;gap:5px;color:var(--muted);font-size:12.5px;cursor:pointer}
+.spacer{flex:1}
+main{flex:1;display:flex;min-height:0}
+.editor{width:360px;min-width:260px;display:flex;flex-direction:column;
+  border-right:1px solid var(--line);background:var(--panel)}
+.editor textarea{flex:1;width:100%;border:0;outline:0;resize:none;padding:12px;
+  font-family:var(--mono);font-size:12.5px;line-height:1.6;background:var(--code-bg);color:var(--ink);tab-size:2}
+#errors{max-height:32%;overflow:auto;border-top:1px solid var(--line);font-family:var(--mono);font-size:12px}
+#errors div{padding:6px 12px;background:var(--err-bg);color:var(--err);border-bottom:1px solid var(--line)}
+#errors.ok div{background:transparent;color:var(--muted)}
+.stage{flex:1;position:relative;overflow:hidden;background:var(--bg)}
+#svgwrap{position:absolute;inset:0}
+#svgwrap svg{width:100%;height:100%;background:#fff;display:block}
+#hint{position:absolute;left:12px;bottom:10px;color:var(--muted);font-size:11.5px;pointer-events:none}
+dialog{border:1px solid var(--line);border-radius:10px;padding:0;background:var(--panel);color:var(--ink);
+  max-width:min(1100px,94vw);width:100%}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+.dlg-head{display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}
+.dlg-head h2{font-size:14px;margin:0;font-weight:650}
+.dlg-body{padding:14px 16px;overflow:auto;max-height:76vh}
+.keygrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(236px,1fr));gap:10px}
+.keyitem{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:var(--radius);padding:8px 10px}
+.keyitem svg{background:#fff;border-radius:4px;flex:none}
+.keyitem .t{font-size:12.5px;line-height:1.35}
+.keyitem .t code{font-family:var(--mono);font-size:11px;color:var(--accent);display:block;margin-top:3px}
+@media (max-width:760px){
+  main{flex-direction:column}
+  .editor{width:auto;height:42%;border-right:0;border-bottom:1px solid var(--line)}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Pedigree Engine</h1>
+  <select id="examples" title="Load an example"></select>
+  <button id="btnKey">Symbol key</button>
+  <label class="chk"><input type="checkbox" id="optNum" checked> Numbering</label>
+  <label class="chk"><input type="checkbox" id="optIds"> Ids</label>
+  <span class="spacer"></span>
+  <button id="btnFit">Fit</button>
+  <button id="btnSvg">Export SVG</button>
+  <button id="btnPng">Export PNG</button>
+</header>
+<main>
+  <section class="editor">
+    <textarea id="src" spellcheck="false"></textarea>
+    <div id="errors" class="ok"><div>ready</div></div>
+  </section>
+  <section class="stage">
+    <div id="svgwrap"></div>
+    <div id="hint">scroll to zoom, drag to pan</div>
+  </section>
+</main>
+<dialog id="keyDlg">
+  <div class="dlg-head"><h2>Symbol key (NSGC 2022 nomenclature)</h2><span class="spacer"></span><button id="btnKeyClose">Close</button></div>
+  <div class="dlg-body"><div class="keygrid" id="keygrid"></div></div>
+</dialog>
+<script>
+"use strict";
+/* ==================================================================
+   0. Geometry constants
+   ================================================================== */
+var NS   = "http://www.w3.org/2000/svg";
+var SYM  = 34;              // nominal symbol size
+var R    = SYM / 2;
+var STEP = 68;              // minimum centre-to-centre spacing inside a row
+var VGAP = 126;             // generation pitch
+var DROP = 66;              // mating line -> sibship line
+var UGAP = STEP * 0.6;      // gap between two sibships of the same person
+var FGAP = STEP * 0.9;      // gap between unrelated founder families
+var INK  = "#111111";
+var LW   = 1.6;
+var FONT = 'ui-sans-serif,"Segoe UI",system-ui,Arial,sans-serif';
+/* phenotype fills: index 0 = unaffected, 1..n = components named in the key */
+var KEY  = ["#ffffff", "#8c8c8c", "#111111", "#d2d2d2", "#5a5a5a", "#ffffff"];
+
+/* ==================================================================
+   1. SVG helpers
+   ================================================================== */
+var _uid = 0, _defs = null, _mkOpen = "arrowOpen", _mkFill = "arrowFill";
+/* every SVG we emit carries its own arrow markers so that it stays
+   self contained once exported or shown next to other drawings */
+function addArrowMarkers(defs){
+  _mkOpen = "aO" + (_uid++);
+  _mkFill = "aF" + (_uid++);
+  [_mkOpen, _mkFill].forEach(function(id){
+    var mk = el("marker", { id:id, viewBox:"0 0 10 10", refX:9, refY:5,
+      markerWidth:7, markerHeight:7, orient:"auto-start-reverse" });
+    mk.appendChild(el("path", { d:"M0,0 L10,5 L0,10 z", fill:INK }));
+    defs.appendChild(mk);
+  });
+}
+function el(n, a){
+  var e = document.createElementNS(NS, n), k;
+  if(a) for(k in a){ if(a[k] !== null && a[k] !== undefined) e.setAttribute(k, a[k]); }
+  return e;
+}
+function merge(base, extra){
+  var o = {}, k;
+  for(k in base) o[k] = base[k];
+  if(extra) for(k in extra) o[k] = extra[k];
+  return o;
+}
+function ln2(p, x1, y1, x2, y2, o){
+  var e = el("line", merge({x1:x1, y1:y1, x2:x2, y2:y2, stroke:INK,
+    "stroke-width":LW, "stroke-linecap":"round"}, o));
+  p.appendChild(e); return e;
+}
+function pth(p, d, o){
+  var e = el("path", merge({d:d, fill:"none", stroke:INK, "stroke-width":LW,
+    "stroke-linejoin":"round", "stroke-linecap":"round"}, o));
+  p.appendChild(e); return e;
+}
+function txt(p, x, y, s, o){
+  var e = el("text", merge({x:x, y:y, "font-size":11, "font-family":FONT,
+    fill:INK, "text-anchor":"middle"}, o));
+  e.textContent = s; p.appendChild(e); return e;
+}
+
+/* ==================================================================
+   2. Parser - a line oriented DSL
+        p <id> <m|f|u> [flag | key=value] ...
+        u <a> x <b> [consang|ended|nooffspring|infertility=cause] [: children]
+        children: id, id, {mz id id}, {dz id id}, {uz id id}
+   ================================================================== */
+function stripComment(s){
+  var q = null, i, c;
+  for(i = 0; i < s.length; i++){
+    c = s.charAt(i);
+    if(q){ if(c === q) q = null; continue; }
+    if(c === '"' || c === "'"){ q = c; continue; }
+    if(c === "#") return s.slice(0, i);
+  }
+  return s;
+}
+function splitOutside(s, ch){
+  var q = null, i, c;
+  for(i = 0; i < s.length; i++){
+    c = s.charAt(i);
+    if(q){ if(c === q) q = null; continue; }
+    if(c === '"' || c === "'"){ q = c; continue; }
+    if(c === ch) return [s.slice(0, i), s.slice(i + 1)];
+  }
+  return [s, null];
+}
+function tokenize(s){
+  var out = [], cur = "", q = null, i, c;
+  for(i = 0; i < s.length; i++){
+    c = s.charAt(i);
+    if(q){ if(c === q) q = null; else cur += c; continue; }
+    if(c === '"' || c === "'"){ q = c; continue; }
+    if(/\s/.test(c)){ if(cur){ out.push(cur); cur = ""; } continue; }
+    cur += c;
+  }
+  if(cur) out.push(cur);
+  return out;
+}
+function kv(t){ var i = t.indexOf("="); return i < 0 ? [t, null] : [t.slice(0, i), t.slice(i + 1)]; }
+
+function newPerson(id){
+  return { id:id, sex:"u", kind:"person", segments:null, carrier:false, nonExpressing:false,
+    deceased:false, proband:false, consultand:false, count:null, pregnancy:false, lmp:null,
+    adopt:null, label:null, tag:null, age:null, gt:null,
+    gen:0, unions:[], parentUnion:null };
+}
+function applyFlag(p, tok, ln, errs){
+  var pair = kv(tok), k = pair[0].toLowerCase(), v = pair[1];
+  switch(k){
+    case "aff": case "affected":
+      p.segments = v ? v.split(",").map(function(s){ return s.trim(); }) : ["1"]; break;
+    case "carrier": p.carrier = true; break;
+    case "ncarrier": case "nonexpressing": p.nonExpressing = true; break;
+    case "dead": case "d": case "deceased": p.deceased = true; break;
+    case "proband": p.proband = true; break;
+    case "consultand": p.consultand = true; break;
+    case "n": case "count": p.count = parseInt(v || "2", 10); break;
+    case "preg": case "pregnancy": p.pregnancy = true; if(v) p.lmp = v; break;
+    case "sab": case "miscarriage": p.kind = "sab"; break;
+    case "top": p.kind = "top"; if(v === "aff") p.segments = ["1"]; break;
+    case "sb": case "stillbirth": p.kind = "sb"; p.deceased = true; break;
+    case "adoptin": p.adopt = "in"; break;
+    case "adoptout": p.adopt = "out"; break;
+    case "label": p.label = v || ""; break;
+    case "tag": p.tag = v || ""; break;
+    case "age": p.age = v || ""; break;
+    case "gt": case "genotype": p.gt = v || ""; break;
+    default: errs.push("line " + ln + ": unknown person flag '" + pair[0] + "'");
+  }
+}
+function parseChildren(s, ln, people, errs){
+  var out = [], re = /\{([^}]*)\}|([^,\s]+)/g, m, g = 0, ok = [];
+  var ZY = { mz:"mz", mono:"mz", dz:"dz", di:"dz", twin:"dz", uz:"uz", unknown:"uz" };
+  while((m = re.exec(s))){
+    if(m[1] !== undefined && m[1] !== null){
+      var parts = m[1].trim().split(/[\s,]+/).filter(Boolean);
+      var z = (parts.shift() || "dz").toLowerCase();
+      var zyg = ZY[z] || "dz", gid = "T" + (g++);
+      parts.forEach(function(id){ out.push({ id:id, twin:gid, zyg:zyg }); });
+    } else out.push({ id:m[2], twin:null, zyg:null });
+  }
+  out.forEach(function(c){
+    if(!people.has(c.id)) errs.push("line " + ln + ": unknown child '" + c.id + "'");
+    else ok.push(c);
+  });
+  return ok;
+}
+function parseDSL(src){
+  var people = new Map(), unions = [], errors = [];
+  var rows = src.split(/\r?\n/).map(function(raw, i){
+    var s = stripComment(raw).trim();
+    return { ln:i + 1, s:s, head:s ? s.split(/\s+/)[0].toLowerCase() : "" };
+  }).filter(function(r){ return r.s; });
+
+  /* pass 1: declarations only, so that a union may reference a person
+     declared further down the file */
+  rows.forEach(function(r){ pass(r, true); });
+  /* pass 2: unions */
+  rows.forEach(function(r){ pass(r, false); });
+
+  function pass(r, decl){
+    var ln = r.ln, s = r.s, head = r.head;
+    if(head === "p" || head === "person"){
+      if(!decl) return;
+      var t = tokenize(s); t.shift();
+      var id = t.shift();
+      if(!id){ errors.push("line " + ln + ": person needs an id"); return; }
+      if(people.has(id)){ errors.push("line " + ln + ": duplicate id '" + id + "'"); return; }
+      var p = newPerson(id), sx = (t[0] || "").toLowerCase();
+      if(sx === "m" || sx === "male"){ p.sex = "m"; t.shift(); }
+      else if(sx === "f" || sx === "female"){ p.sex = "f"; t.shift(); }
+      else if(sx === "u" || sx === "unknown" || sx === "nb" || sx === "?"){ p.sex = "u"; t.shift(); }
+      t.forEach(function(tok){ applyFlag(p, tok, ln, errors); });
+      people.set(id, p);
+    } else if(head === "u" || head === "union"){
+      if(decl) return;
+      var parts2 = splitOutside(s, ":"), lhs = parts2[0], rhs = parts2[1];
+      var tt = tokenize(lhs); tt.shift();
+      var a = tt.shift(), op = tt.shift(), b = tt.shift();
+      if(op && ["x", "+", "-"].indexOf(String(op).toLowerCase()) < 0)
+        errors.push("line " + ln + ": expected 'x' between the two partners");
+      if(!a || !b){ errors.push("line " + ln + ": a union needs two partners"); return; }
+      if(!people.has(a)) errors.push("line " + ln + ": unknown person '" + a + "'");
+      if(!people.has(b)) errors.push("line " + ln + ": unknown person '" + b + "'");
+      var u = { partners:[a, b], consang:false, ended:false, noOffspring:false,
+                infertility:false, cause:null, children:[] };
+      tt.forEach(function(tok){
+        var pr = kv(tok), k = pr[0].toLowerCase(), v = pr[1];
+        if(k === "consang" || k === "consanguineous") u.consang = true;
+        else if(k === "ended" || k === "divorced" || k === "separated") u.ended = true;
+        else if(k === "nooffspring"){ u.noOffspring = true; if(v) u.cause = v; }
+        else if(k === "infertility"){ u.infertility = true; if(v) u.cause = v; }
+        else errors.push("line " + ln + ": unknown union flag '" + pr[0] + "'");
+      });
+      if(rhs) u.children = parseChildren(rhs, ln, people, errors);
+      unions.push(u);
+    } else if(decl) errors.push("line " + ln + ": expected 'p' or 'u', got '" + head + "'");
+  }
+
+  unions.forEach(function(u, i){
+    u.key = "U" + i;
+    u.partners.forEach(function(id){ var p = people.get(id); if(p) p.unions.push(u); });
+    u.children.forEach(function(c){
+      var p = people.get(c.id); if(!p) return;
+      if(p.parentUnion) errors.push("'" + c.id + "' is listed as a child of two unions");
+      else p.parentUnion = u;
+    });
+  });
+  return { people:people, unions:unions, errors:errors };
+}
+
+/* ==================================================================
+   3. Generation assignment  (longest path relaxation)
+      - both partners of a union are forced onto the same row
+      - a child sits strictly one row below the lower of its parents
+   ================================================================== */
+function assignGenerations(m){
+  m.people.forEach(function(p){ p.gen = 0; });
+  var changed = true, guard = 0;
+  while(changed && guard++ < 400){
+    changed = false;
+    m.unions.forEach(function(u){
+      var ps = u.partners.map(function(id){ return m.people.get(id); }).filter(Boolean);
+      if(ps.length < 2) return;
+      var g = Math.max.apply(null, ps.map(function(p){ return p.gen; }));
+      ps.forEach(function(p){ if(p.gen !== g){ p.gen = g; changed = true; } });
+      u.children.forEach(function(c){
+        var cp = m.people.get(c.id);
+        if(cp && cp.gen < g + 1){ cp.gen = g + 1; changed = true; }
+      });
+    });
+  }
+  if(guard >= 400) m.errors.push("generation assignment did not converge - check for a cycle");
+  var min = Infinity;
+  m.people.forEach(function(p){ if(p.gen < min) min = p.gen; });
+  if(isFinite(min)) m.people.forEach(function(p){ p.gen -= min; });
+}
+
+/* ==================================================================
+   4. Layout
+      Recursive block composition.  buildBlock(person) returns
+        { items:[{id,x}], left, right }  in anchor relative coordinates
+      with the person itself at x = 0.  Blocks are packed side by side
+      using their true extents, so nothing can overlap by construction.
+   ================================================================== */
+function layout(m){
+  var placed = new Set(), consumed = new Set(), sibBuilt = new Set();
+  var remoteKeys = [], byKey = {};
+  m.unions.forEach(function(u){ byKey[u.key] = u; });
+
+  function other(u, id){ return u.partners[0] === id ? u.partners[1] : u.partners[0]; }
+
+  function buildSibship(u){
+    sibBuilt.add(u.key);
+    var kids = u.children.filter(function(c){ return m.people.has(c.id) && !placed.has(c.id); });
+    if(!kids.length) return null;
+    var blocks = kids.map(function(c){ return buildBlock(c.id); });
+    var offs = [-blocks[0].left], i;
+    for(i = 1; i < blocks.length; i++) offs.push(offs[i - 1] + blocks[i - 1].right - blocks[i].left);
+    var items = [], L = Infinity, Rt = -Infinity;
+    blocks.forEach(function(b, j){
+      b.items.forEach(function(it){ items.push({ id:it.id, x:it.x + offs[j] }); });
+      L = Math.min(L, offs[j] + b.left);
+      Rt = Math.max(Rt, offs[j] + b.right);
+    });
+    var c = (L + Rt) / 2;
+    items.forEach(function(it){ it.x -= c; });
+    return { items:items, left:L - c, right:Rt - c };
+  }
+
+  function buildBlock(pid){
+    var p = m.people.get(pid);
+    if(placed.has(pid)) return { items:[], left:0, right:0 };
+    placed.add(pid);
+
+    var take = [];
+    p.unions.forEach(function(u){
+      if(consumed.has(u.key)) return;
+      var oid = other(u, pid), sp = m.people.get(oid);
+      if(!sp) return;
+      // defer: the spouse is a child of a union that has not been drawn yet,
+      // so let the spouse be positioned inside their own sibship first.
+      if(!placed.has(oid) && sp.parentUnion && !sibBuilt.has(sp.parentUnion.key)) return;
+      take.push(u);
+    });
+
+    var adj = [], remote = [];
+    take.forEach(function(u){
+      consumed.add(u.key);
+      if(placed.has(other(u, pid))){ remote.push(u); remoteKeys.push(u.key); }
+      else { adj.push(u); placed.add(other(u, pid)); }
+    });
+
+    if(!adj.length && !remote.length)
+      return { items:[{ id:pid, x:0 }], left:-STEP / 2, right:STEP / 2 };
+
+    /* --- top row order: male on the left; shared person in the middle --- */
+    var row;
+    if(adj.length === 0) row = [pid];
+    else if(adj.length === 1){
+      var sp1 = other(adj[0], pid), sm = m.people.get(sp1);
+      row = (p.sex === "f" && sm.sex === "m") ? [sp1, pid] : [pid, sp1];
+    } else {
+      row = [other(adj[0], pid), pid];
+      for(var i = 1; i < adj.length; i++) row.push(other(adj[i], pid));
+    }
+    var idx = function(id){ return row.indexOf(id); };
+
+    var units = [];
+    adj.forEach(function(u){
+      var a = idx(pid), b = idx(other(u, pid));
+      units.push({ u:u, l:Math.min(a, b), r:Math.max(a, b) });
+    });
+    remote.forEach(function(u){ units.push({ u:u, l:idx(pid), r:idx(pid) }); });
+    units.sort(function(a, b){ return (a.r - b.r) || (a.l - b.l); });
+
+    units.forEach(function(un){ un.sib = buildSibship(un.u); });   // recursion
+
+    /* --- solve x positions so that sibships never collide --- */
+    var x = row.map(function(_, i){ return i * STEP; });
+    var prevRight = -Infinity;
+    units.forEach(function(un){
+      var mid = (x[un.l] + x[un.r]) / 2;
+      if(!un.sib){ un.mid = mid; return; }
+      var needLeft = mid + un.sib.left;
+      if(needLeft < prevRight + UGAP){
+        var delta = (prevRight + UGAP) - needLeft;
+        if(un.r > un.l){
+          for(var i = un.r; i < x.length; i++) x[i] += delta * 2;  // moving one partner moves mid by delta
+          mid = (x[un.l] + x[un.r]) / 2;
+        } else mid += delta;                                       // remote union: slide the sibship only
+      }
+      un.mid = mid;
+      prevRight = mid + un.sib.right;
+    });
+
+    var items = [];
+    row.forEach(function(id, i){ items.push({ id:id, x:x[i] }); });
+    units.forEach(function(un){
+      if(!un.sib) return;
+      un.sib.items.forEach(function(it){ items.push({ id:it.id, x:it.x + un.mid }); });
+    });
+    var anchor = x[idx(pid)];
+    var L = Infinity, Rt = -Infinity;
+    items.forEach(function(it){
+      it.x -= anchor;
+      L = Math.min(L, it.x - STEP / 2);
+      Rt = Math.max(Rt, it.x + STEP / 2);
+    });
+    return { items:items, left:L, right:Rt };
+  }
+
+  /* --- top level: founders first, then anything still unplaced --- */
+  var blocks = [], order = [];
+  m.people.forEach(function(p){ if(!p.parentUnion) order.push(p.id); });
+  m.people.forEach(function(p){ if(p.parentUnion) order.push(p.id); });
+  order.forEach(function(id){
+    if(placed.has(id)) return;
+    var b = buildBlock(id);
+    if(b.items.length) blocks.push(b);
+  });
+
+  var pos = new Map(), cur = 0;
+  blocks.forEach(function(b){
+    var off = cur - b.left;
+    b.items.forEach(function(it){
+      var p = m.people.get(it.id);
+      pos.set(it.id, { x:it.x + off, y:p.gen * VGAP, gen:p.gen });
+    });
+    cur = off + b.right + FGAP;
+  });
+
+  /* --- post pass: recentre the children of a routed (remote) union --- */
+  remoteKeys.forEach(function(k){ recentre(m, byKey[k], pos); });
+
+  /* --- normalise --- */
+  var minx = Infinity;
+  pos.forEach(function(v){ if(v.x < minx) minx = v.x; });
+  if(isFinite(minx)) pos.forEach(function(v){ v.x -= minx; });
+  return pos;
+}
+
+function descendantsOf(m, u){
+  var out = new Set(), stack = u.children.map(function(c){ return c.id; });
+  while(stack.length){
+    var id = stack.pop();
+    if(out.has(id)) continue;
+    var p = m.people.get(id);
+    if(!p) continue;
+    out.add(id);
+    p.unions.forEach(function(uu){
+      var sp = uu.partners[0] === id ? uu.partners[1] : uu.partners[0];
+      if(sp) out.add(sp);
+      uu.children.forEach(function(c){ stack.push(c.id); });
+    });
+  }
+  return out;
+}
+function recentre(m, u, pos){
+  if(!u) return;
+  var A = pos.get(u.partners[0]), B = pos.get(u.partners[1]);
+  if(!A || !B) return;
+  var ks = u.children.map(function(c){ return pos.get(c.id); }).filter(Boolean);
+  if(!ks.length) return;
+  var lo = Math.min.apply(null, ks.map(function(v){ return v.x; }));
+  var hi = Math.max.apply(null, ks.map(function(v){ return v.x; }));
+  var want = (A.x + B.x) / 2, shift = want - (lo + hi) / 2;
+  if(Math.abs(shift) < 1) return;
+
+  var D = descendantsOf(m, u);
+  var rows = new Map();
+  pos.forEach(function(v, id){
+    if(!rows.has(v.gen)) rows.set(v.gen, []);
+    rows.get(v.gen).push({ id:id, x:v.x });
+  });
+  var lim = Math.abs(shift);
+  rows.forEach(function(arr){
+    var mov = arr.filter(function(a){ return D.has(a.id); });
+    var fix = arr.filter(function(a){ return !D.has(a.id); });
+    if(!mov.length || !fix.length) return;
+    mov.forEach(function(mv){
+      fix.forEach(function(fx){
+        var gap = fx.x - mv.x;
+        if(shift > 0 && gap > 0) lim = Math.min(lim, Math.max(0, gap - STEP));
+        if(shift < 0 && gap < 0) lim = Math.min(lim, Math.max(0, -gap - STEP));
+      });
+    });
+  });
+  var s = (shift < 0 ? -1 : 1) * Math.min(Math.abs(shift), lim);
+  if(Math.abs(s) < 0.5) return;
+  D.forEach(function(id){ var v = pos.get(id); if(v) v.x += s; });
+}
+
+/* ==================================================================
+   5. Symbol drawing
+   ================================================================== */
+function ext(p){ return p.sex === "u" ? R * 1.2 : R; }
+function shapeNode(p){
+  if(p.sex === "m") return el("rect", { x:-R, y:-R, width:SYM, height:SYM });
+  if(p.sex === "f") return el("circle", { cx:0, cy:0, r:R });
+  var e = R * 1.2;
+  return el("polygon", { points:"0," + (-e) + " " + e + ",0 0," + e + " " + (-e) + ",0" });
+}
+function triPoints(){ return "0," + (-R * 0.66) + " " + (R * 0.82) + "," + (R * 0.5) + " " + (-R * 0.82) + "," + (R * 0.5); }
+/* vertical offset of the point where a descent line meets the symbol */
+function topOffset(p){
+  if(p.kind === "sab" || p.kind === "top") return -R * 0.66;
+  return -ext(p);
+}
+function fillOf(code){
+  var i = parseInt(code, 10);
+  if(isNaN(i)) i = 1;
+  return KEY[i] !== undefined ? KEY[i] : KEY[1];
+}
+
+/* text printed under a symbol, top to bottom */
+function labelLines(p, opts){
+  var lines = [];
+  if(p.kind === "sb") lines.push("SB");
+  if(p.tag) lines.push(p.tag);
+  else if(opts && opts.showIds) lines.push(p.id);
+  if(p.label) lines.push(p.label);
+  if(p.age) lines.push(p.age);
+  if(p.lmp) lines.push("LMP " + p.lmp);
+  if(p.gt) lines.push(p.gt);
+  return lines;
+}
+/* widen every column until the longest label of the drawing fits */
+function tuneSpacing(m, opts){
+  var w = 68;
+  m.people.forEach(function(p){
+    var mx = 0;
+    labelLines(p, opts).forEach(function(s){ mx = Math.max(mx, s.length * 5.4); });
+    var need = mx + 16;
+    if(p.proband || p.consultand) need = Math.max(need, mx / 2 + 60);
+    w = Math.max(w, need);
+  });
+  STEP = Math.min(Math.round(w), 190);
+  UGAP = STEP * 0.6;
+  FGAP = STEP * 0.9;
+}
+
+function drawPerson(parent, p, x, y, opts){
+  opts = opts || {};
+  var g = el("g", { transform:"translate(" + x + "," + y + ")" });
+  var e = ext(p), i;
+
+  if(p.kind === "sab" || p.kind === "top"){
+    g.appendChild(el("polygon", { points:triPoints(),
+      fill: p.segments ? fillOf(p.segments[0]) : "#ffffff",
+      stroke:INK, "stroke-width":LW, "stroke-linejoin":"round" }));
+    if(p.kind === "top") ln2(g, -R * 0.98, R * 0.72, R * 0.98, -R * 0.86);
+  } else {
+    var base = shapeNode(p);
+    base.setAttribute("fill", "#ffffff"); base.setAttribute("stroke", "none");
+    g.appendChild(base);
+
+    if(p.segments && p.segments.length){
+      var cid = "clip" + (_uid++);
+      var cp = el("clipPath", { id:cid, clipPathUnits:"userSpaceOnUse" });
+      cp.appendChild(shapeNode(p));
+      if(_defs) _defs.appendChild(cp);
+      var gg = el("g", { "clip-path":"url(#" + cid + ")" });
+      var n = p.segments.length, boxes = [];
+      if(n === 4) boxes = [{x:-e,y:-e},{x:0,y:-e},{x:-e,y:0},{x:0,y:0}].map(function(b){
+        return { x:b.x, y:b.y, w:e, h:e }; });
+      else for(i = 0; i < n; i++) boxes.push({ x:-e + i * (2 * e / n), y:-e, w:2 * e / n, h:2 * e });
+      boxes.forEach(function(b, j){
+        gg.appendChild(el("rect", { x:b.x, y:b.y, width:b.w, height:b.h,
+          fill:fillOf(p.segments[j]) }));
+      });
+      if(n === 4){
+        gg.appendChild(el("line", { x1:-e, y1:0, x2:e, y2:0, stroke:INK, "stroke-width":1 }));
+        gg.appendChild(el("line", { x1:0, y1:-e, x2:0, y2:e, stroke:INK, "stroke-width":1 }));
+      } else for(i = 1; i < n; i++){
+        var sx = -e + i * (2 * e / n);
+        gg.appendChild(el("line", { x1:sx, y1:-e, x2:sx, y2:e, stroke:INK, "stroke-width":1 }));
+      }
+      g.appendChild(gg);
+    }
+    var outline = shapeNode(p);
+    outline.setAttribute("fill", "none");
+    outline.setAttribute("stroke", INK);
+    outline.setAttribute("stroke-width", LW);
+    outline.setAttribute("stroke-linejoin", "round");
+    g.appendChild(outline);
+  }
+
+  /* interior marks */
+  if(p.nonExpressing) ln2(g, 0, -e, 0, e);
+  if(p.carrier) g.appendChild(el("circle", { cx:0, cy:0, r:3.4, fill:INK }));
+  if(p.count !== null && p.count !== undefined)
+    txt(g, 0, 4.5, String(p.count), { "font-size":13, "font-weight":600 });
+  if(p.pregnancy) txt(g, 0, 4.5, "P", { "font-size":13, "font-weight":600 });
+
+  /* deceased slash, top left to bottom right */
+  if(p.deceased){
+    var dl = (p.sex === "m" ? R * 1.5 : e * 1.38) / Math.SQRT2;
+    ln2(g, -dl, -dl, dl, dl);
+  }
+
+  /* adoption brackets */
+  if(p.adopt){
+    var bx = e * 1.5, by = e * 1.35, t = 7;
+    pth(g, "M" + (-bx + t) + "," + (-by) + " L" + (-bx) + "," + (-by) +
+           " L" + (-bx) + "," + by + " L" + (-bx + t) + "," + by);
+    pth(g, "M" + (bx - t) + "," + (-by) + " L" + bx + "," + (-by) +
+           " L" + bx + "," + by + " L" + (bx - t) + "," + by);
+  }
+
+  /* proband / consultand arrow from the lower left */
+  var hasArrow = p.proband || p.consultand;
+  if(hasArrow){
+    var ax = -e - 6, ay = e + 4, bx2 = -e - 26, by2 = e + 18;
+    ln2(g, bx2, by2, ax, ay,
+      { "marker-end":"url(#" + (p.proband ? _mkOpen : _mkFill) + ")", "stroke-linecap":"butt" });
+    txt(g, bx2 - 8, by2 - 1, p.proband ? "P" : "C", { "font-size":11, "font-weight":600 });
+  }
+
+  /* labels under the symbol */
+  var lines = labelLines(p, opts), y0 = e + (hasArrow ? 30 : 13);
+  lines.forEach(function(s, j){
+    txt(g, 0, y0 + j * 11.5, s, { "font-size":10.5, fill:"#333" });
+  });
+
+  parent.appendChild(g);
+  return g;
+}
+
+/* ==================================================================
+   6. Renderer
+   ================================================================== */
+function roman(n){
+  var v = [1000,900,500,400,100,90,50,40,10,9,5,4,1];
+  var s = ["M","CM","D","CD","C","XC","L","XL","X","IX","V","IV","I"], out = "";
+  n = n + 1;
+  for(var i = 0; i < v.length; i++) while(n >= v[i]){ out += s[i]; n -= v[i]; }
+  return out;
+}
+function renderSVG(m, pos, opts){
+  opts = opts || {};
+  var svg = el("svg", { xmlns:NS, "font-family":FONT });
+  _defs = el("defs");
+  addArrowMarkers(_defs);
+  svg.appendChild(_defs);
+
+  var gLink = el("g"), gSym = el("g"), gAnno = el("g");
+  svg.appendChild(gLink); svg.appendChild(gSym); svg.appendChild(gAnno);
+
+  /* occupancy per generation, used to decide if a mating line is clear */
+  var rows = new Map();
+  pos.forEach(function(v, id){
+    if(!rows.has(v.gen)) rows.set(v.gen, []);
+    rows.get(v.gen).push({ id:id, x:v.x });
+  });
+  rows.forEach(function(a){ a.sort(function(p, q){ return p.x - q.x; }); });
+
+  var dodge = 0;
+
+  m.unions.forEach(function(u){
+    var A = pos.get(u.partners[0]), B = pos.get(u.partners[1]);
+    var pa = m.people.get(u.partners[0]), pb = m.people.get(u.partners[1]);
+    if(!A || !B || !pa || !pb) return;
+    var Lp = A.x <= B.x ? A : B, Rp = A.x <= B.x ? B : A;
+    var Lq = A.x <= B.x ? pa : pb, Rq = A.x <= B.x ? pb : pa;
+    var y = Lp.y, mid = (Lp.x + Rp.x) / 2, startY = y;
+
+    var blocked = (Lp.gen !== Rp.gen) || (rows.get(Lp.gen) || []).some(function(e2){
+      return e2.x > Lp.x + 1 && e2.x < Rp.x - 1;
+    });
+
+    if(!blocked){
+      var x1 = Lp.x + ext(Lq), x2 = Rp.x - ext(Rq);
+      if(u.consang){ ln2(gLink, x1, y - 2.6, x2, y - 2.6); ln2(gLink, x1, y + 2.6, x2, y + 2.6); }
+      else ln2(gLink, x1, y, x2, y);
+      if(u.ended){
+        ln2(gLink, mid - 9, y + 8, mid - 1, y - 8);
+        ln2(gLink, mid - 1, y + 8, mid + 7, y - 8);
+      }
+    } else {
+      var dy = y + R + 18 + (dodge++) * 9;
+      pth(gLink, "M" + Lp.x + "," + (Lp.y + ext(Lq)) + " L" + Lp.x + "," + dy +
+                 " L" + Rp.x + "," + dy + " L" + Rp.x + "," + (Rp.y + ext(Rq)),
+          u.consang ? { "stroke-width":LW } : null);
+      if(u.consang) pth(gLink, "M" + (Lp.x + 5) + "," + (Lp.y + ext(Lq)) + " L" + (Lp.x + 5) + "," + (dy - 5) +
+                 " L" + (Rp.x - 5) + "," + (dy - 5) + " L" + (Rp.x - 5) + "," + (Rp.y + ext(Rq)));
+      if(u.ended){
+        ln2(gLink, mid - 9, dy + 8, mid - 1, dy - 8);
+        ln2(gLink, mid - 1, dy + 8, mid + 7, dy - 8);
+      }
+      startY = dy;
+    }
+
+    var kids = u.children.filter(function(c){ return pos.has(c.id); });
+
+    if(!kids.length){
+      if(u.noOffspring || u.infertility){
+        var sy = startY, by = startY + 32;
+        ln2(gLink, mid, sy, mid, by);
+        ln2(gLink, mid - 14, by, mid + 14, by);
+        if(u.infertility) ln2(gLink, mid - 14, by + 6, mid + 14, by + 6);
+        if(u.cause) txt(gAnno, mid, by + 20, "[" + u.cause + "]", { "font-size":10, fill:"#333" });
+      }
+      return;
+    }
+
+    var sibY = Math.max(y + DROP, startY + 24);
+
+    /* group the twins */
+    var groups = [], gmap = {};
+    kids.forEach(function(c){
+      if(c.twin){
+        if(!gmap[c.twin]){ gmap[c.twin] = { ids:[], zyg:c.zyg }; groups.push(gmap[c.twin]); }
+        gmap[c.twin].ids.push(c.id);
+      } else groups.push({ ids:[c.id], zyg:null });
+    });
+
+    var att = groups.map(function(gp){
+      var xs = gp.ids.map(function(id){ return pos.get(id).x; });
+      return { x:(Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2, g:gp };
+    });
+    var axs = att.map(function(a){ return a.x; });
+    var spanL = Math.min(mid, Math.min.apply(null, axs));
+    var spanR = Math.max(mid, Math.max.apply(null, axs));
+
+    ln2(gLink, mid, startY, mid, sibY);
+    if(spanR - spanL > 1) ln2(gLink, spanL, sibY, spanR, sibY);
+
+    att.forEach(function(a){
+      var gp = a.g;
+      if(gp.ids.length === 1){
+        var id = gp.ids[0], cp = pos.get(id), per = m.people.get(id);
+        ln2(gLink, a.x, sibY, cp.x, cp.y + topOffset(per),
+            per.adopt === "in" ? { "stroke-dasharray":"5 4" } : null);
+      } else {
+        var legs = [];
+        gp.ids.forEach(function(id){
+          var cp = pos.get(id), per = m.people.get(id);
+          var ty = cp.y + topOffset(per);
+          ln2(gLink, a.x, sibY, cp.x, ty);
+          legs.push({ x:cp.x, y:ty });
+        });
+        if(gp.zyg === "mz" && legs.length >= 2){
+          var t = 0.55;
+          var lx = legs.map(function(L2){ return a.x + (L2.x - a.x) * t; });
+          var ly = sibY + (legs[0].y - sibY) * t;
+          ln2(gLink, Math.min.apply(null, lx), ly, Math.max.apply(null, lx), ly);
+        }
+        if(gp.zyg === "uz")
+          txt(gAnno, a.x, sibY + (legs[0].y - sibY) * 0.62, "?", { "font-size":12 });
+      }
+    });
+  });
+
+  /* symbols */
+  var ids = [];
+  pos.forEach(function(v, id){ ids.push(id); });
+  ids.forEach(function(id){
+    var v = pos.get(id);
+    drawPerson(gSym, m.people.get(id), v.x, v.y, opts);
+  });
+
+  /* generation numerals and within-row numbering */
+  var minx = Infinity, maxx = -Infinity, maxy = -Infinity;
+  pos.forEach(function(v){
+    minx = Math.min(minx, v.x); maxx = Math.max(maxx, v.x); maxy = Math.max(maxy, v.y);
+  });
+  if(opts.numbering){
+    rows.forEach(function(arr, g){
+      txt(gAnno, minx - 56, g * VGAP + 4, roman(g),
+        { "font-size":13, "font-weight":650, fill:"#444" });
+      arr.forEach(function(e2, i){
+        var v = pos.get(e2.id), per = m.people.get(e2.id);
+        txt(gAnno, v.x - ext(per) - 7, v.y - ext(per) + 2, String(i + 1),
+          { "font-size":9.5, fill:"#666", "text-anchor":"end" });
+      });
+    });
+  }
+
+  var padB = 46;
+  m.people.forEach(function(p){
+    var n = labelLines(p, opts).length;
+    var need = ext(p) + (p.proband || p.consultand ? 30 : 13) + n * 11.5 + 12;
+    if(need > padB) padB = need;
+  });
+  var padL = 86, padR = 70, padT = 58;
+  var w = (maxx - minx) + padL + padR, h = maxy + padT + padB;
+  svg.setAttribute("viewBox", (minx - padL) + " " + (-padT) + " " + w + " " + h);
+  svg.setAttribute("width", w);
+  svg.setAttribute("height", h);
+  svg.dataset.vb = (minx - padL) + " " + (-padT) + " " + w + " " + h;
+  _defs = null;
+  return svg;
+}
+
+/* ==================================================================
+   7. Symbol key - every figure symbol, drawn by the same primitives
+   ================================================================== */
+function mini(w, h, build){
+  var svg = el("svg", { xmlns:NS, width:w, height:h, viewBox:(-w / 2) + " " + (-h / 2) + " " + w + " " + h, "font-family":FONT });
+  _defs = el("defs");
+  addArrowMarkers(_defs);
+  svg.appendChild(_defs);
+  var g = el("g"); svg.appendChild(g);
+  build(g, svg);
+  _defs = null;
+  return svg;
+}
+function pseudo(o){ var p = newPerson("k"); for(var k in o) p[k] = o[k]; return p; }
+
+var KEYITEMS = [
+  ["Male", "p id m", 64, 58, function(g){ drawPerson(g, pseudo({ sex:"m" }), 0, 0, {}); }],
+  ["Female", "p id f", 64, 58, function(g){ drawPerson(g, pseudo({ sex:"f" }), 0, 0, {}); }],
+  ["Sex or gender unknown, or non-binary", "p id u", 64, 58, function(g){ drawPerson(g, pseudo({ sex:"u" }), 0, 0, {}); }],
+  ["Number of individuals in a category", "n=2", 64, 58, function(g){ drawPerson(g, pseudo({ sex:"u", count:2 }), 0, 0, {}); }],
+  ["Affected with the phenotype in the key", "aff", 64, 58, function(g){ drawPerson(g, pseudo({ sex:"f", segments:["1"] }), 0, 0, {}); }],
+  ["Segments = components of the phenotype", "aff=2,0,0,3", 64, 58, function(g){ drawPerson(g, pseudo({ sex:"m", segments:["2","0","0","3"] }), 0, 0, {}); }],
+  ["Currently non-expressing carrier (dominant)", "ncarrier", 64, 58, function(g){ drawPerson(g, pseudo({ sex:"f", nonExpressing:true }), 0, 0, {}); }],
+  ["Carrier for a recessive phenotype", "carrier", 64, 58, function(g){ drawPerson(g, pseudo({ sex:"m", carrier:true }), 0, 0, {}); }],
+  ["Deceased", "dead", 64, 58, function(g){ drawPerson(g, pseudo({ sex:"f", deceased:true }), 0, 0, {}); }],
+  ["Proband", "proband", 110, 76, function(g){ drawPerson(g, pseudo({ sex:"m", segments:["1"], proband:true }), 18, -8, {}); }],
+  ["Consultand", "consultand", 110, 76, function(g){ drawPerson(g, pseudo({ sex:"f", consultand:true }), 18, -8, {}); }],
+  ["Spontaneous abortion / miscarriage", "sab", 64, 58, function(g){
+      ln2(g, 0, -26, 0, -R * 0.66); drawPerson(g, pseudo({ kind:"sab" }), 0, 0, {}); }],
+  ["Termination of pregnancy (TOP)", "top  /  top=aff", 100, 58, function(g){
+      ln2(g, -22, -26, -22, -R * 0.66); drawPerson(g, pseudo({ kind:"top", segments:["1"] }), -22, 0, {});
+      ln2(g, 22, -26, 22, -R * 0.66); drawPerson(g, pseudo({ kind:"top" }), 22, 0, {}); }],
+  ["Pregnancy with information", "preg=\"3 Mar 2026\"", 92, 72, function(g){
+      drawPerson(g, pseudo({ sex:"u", pregnancy:true, lmp:"3 Mar 2026" }), 0, -10, {}); }],
+  ["Stillbirth", "sb", 64, 68, function(g){ drawPerson(g, pseudo({ sex:"u", kind:"sb", deceased:true }), 0, -6, {}); }],
+  ["Marriage or union", "u a x b", 104, 58, function(g){
+      drawPerson(g, pseudo({ sex:"m" }), -30, 0, {}); drawPerson(g, pseudo({ sex:"f" }), 30, 0, {});
+      ln2(g, -30 + R, 0, 30 - R, 0); }],
+  ["Union ended", "ended", 104, 58, function(g){
+      drawPerson(g, pseudo({ sex:"m" }), -30, 0, {}); drawPerson(g, pseudo({ sex:"f" }), 30, 0, {});
+      ln2(g, -30 + R, 0, 30 - R, 0); ln2(g, -9, 8, -1, -8); ln2(g, -1, 8, 7, -8); }],
+  ["Consanguineous union", "consang", 104, 58, function(g){
+      drawPerson(g, pseudo({ sex:"m" }), -30, 0, {}); drawPerson(g, pseudo({ sex:"f" }), 30, 0, {});
+      ln2(g, -30 + R, -2.6, 30 - R, -2.6); ln2(g, -30 + R, 2.6, 30 - R, 2.6); }],
+  ["Sibship", ": a, b", 104, 92, function(g){
+      ln2(g, 0, -42, 0, -24); ln2(g, -24, -24, 24, -24);
+      ln2(g, -24, -24, -24, 8 - R); ln2(g, 24, -24, 24, 8 - R);
+      drawPerson(g, pseudo({ sex:"m" }), -24, 8, {}); drawPerson(g, pseudo({ sex:"f" }), 24, 8, {}); }],
+  ["No offspring", "nooffspring", 104, 92, function(g){
+      drawPerson(g, pseudo({ sex:"m" }), -30, -20, {}); drawPerson(g, pseudo({ sex:"f" }), 30, -20, {});
+      ln2(g, -30 + R, -20, 30 - R, -20); ln2(g, 0, -20, 0, 14); ln2(g, -14, 14, 14, 14); }],
+  ["Infertility", "infertility=\"cause\"", 104, 100, function(g){
+      drawPerson(g, pseudo({ sex:"m" }), -30, -24, {}); drawPerson(g, pseudo({ sex:"f" }), 30, -24, {});
+      ln2(g, -30 + R, -24, 30 - R, -24); ln2(g, 0, -24, 0, 12);
+      ln2(g, -14, 12, 14, 12); ln2(g, -14, 18, 14, 18); }],
+  ["Monozygotic twins", "{mz a b}", 104, 86, function(g){
+      ln2(g, 0, -34, 0, -16);
+      drawPerson(g, pseudo({ sex:"m" }), -24, 18, {}); drawPerson(g, pseudo({ sex:"m" }), 24, 18, {});
+      ln2(g, 0, -16, -24, 18 - R); ln2(g, 0, -16, 24, 18 - R);
+      ln2(g, -13.2, -6.7, 13.2, -6.7); }],
+  ["Dizygotic twins", "{dz a b}", 104, 86, function(g){
+      ln2(g, 0, -34, 0, -16);
+      drawPerson(g, pseudo({ sex:"f" }), -24, 18, {}); drawPerson(g, pseudo({ sex:"f" }), 24, 18, {});
+      ln2(g, 0, -16, -24, 18 - R); ln2(g, 0, -16, 24, 18 - R); }],
+  ["Twins of unknown zygosity", "{uz a b}", 104, 86, function(g){
+      ln2(g, 0, -34, 0, -16);
+      drawPerson(g, pseudo({ sex:"f" }), -24, 18, {}); drawPerson(g, pseudo({ sex:"f" }), 24, 18, {});
+      ln2(g, 0, -16, -24, 18 - R); ln2(g, 0, -16, 24, 18 - R);
+      txt(g, 0, 5, "?", { "font-size":12 }); }],
+  ["Adopted into the family (dashed descent)", "adoptin", 100, 104, function(g){
+      drawPerson(g, pseudo({ sex:"m" }), -28, -32, {}); drawPerson(g, pseudo({ sex:"f" }), 28, -32, {});
+      ln2(g, -28 + R, -32, 28 - R, -32); ln2(g, 0, -32, 0, 20 - R, { "stroke-dasharray":"5 4" });
+      drawPerson(g, pseudo({ sex:"m", adopt:"in" }), 0, 20, {}); }],
+  ["Adopted out of the family (solid descent)", "adoptout", 100, 104, function(g){
+      drawPerson(g, pseudo({ sex:"f" }), 0, -32, {}); ln2(g, 0, -32 + R, 0, 20 - R * 1.2);
+      drawPerson(g, pseudo({ sex:"u", adopt:"out" }), 0, 20, {}); }],
+  ["Known genotype under the symbol", "gt=\"F508del/F508del\"", 120, 72, function(g){
+      drawPerson(g, pseudo({ sex:"f", segments:["1"], gt:"F508del/F508del" }), 0, -12, {}); }]
+];
+function buildKey(){
+  var grid = document.getElementById("keygrid");
+  grid.innerHTML = "";
+  KEYITEMS.forEach(function(it){
+    var d = document.createElement("div"); d.className = "keyitem";
+    d.appendChild(mini(it[2], it[3], it[4]));
+    var t = document.createElement("div"); t.className = "t";
+    t.innerHTML = "";
+    var span = document.createElement("span"); span.textContent = it[0];
+    var code = document.createElement("code"); code.textContent = it[1];
+    t.appendChild(span); t.appendChild(code);
+    d.appendChild(t); grid.appendChild(d);
+  });
+}
+
+/* ==================================================================
+   8. Examples
+   ================================================================== */
+var EXAMPLES = [
+["Autosomal dominant",
+"# Autosomal dominant, vertical transmission, male to male\n" +
+"p I1 m aff tag=\"I-1\" age=\"d.62\" dead\n" +
+"p I2 f tag=\"I-2\"\n" +
+"u I1 x I2 : II2, II4\n" +
+"\n" +
+"p II1 f tag=\"II-1\"\n" +
+"p II2 m aff tag=\"II-2\"\n" +
+"p II3 m tag=\"II-3\"\n" +
+"p II4 f tag=\"II-4\"\n" +
+"u II2 x II1 : III1, III2, III3\n" +
+"u II3 x II4 : III4\n" +
+"\n" +
+"p III1 m aff proband tag=\"III-1\" age=\"34 y\"\n" +
+"p III2 f tag=\"III-2\"\n" +
+"p III3 m aff tag=\"III-3\"\n" +
+"p III4 f tag=\"III-4\" preg=\"12 Jan 2026\"\n"],
+
+["Autosomal recessive, first cousins",
+"# Consanguineous union of first cousins\n" +
+"p I1 m carrier\n" +
+"p I2 f carrier\n" +
+"u I1 x I2 : II1, II3\n" +
+"\n" +
+"p II1 m carrier\n" +
+"p II2 f\n" +
+"p II3 f carrier\n" +
+"p II4 m\n" +
+"u II1 x II2 : III1\n" +
+"u II4 x II3 : III2\n" +
+"\n" +
+"p III1 m carrier\n" +
+"p III2 f carrier\n" +
+"u III1 x III2 consang : IV1, IV2, IV3\n" +
+"\n" +
+"p IV1 m aff proband gt=\"F508del/F508del\"\n" +
+"p IV2 f carrier gt=\"F508del/+\"\n" +
+"p IV3 u sab\n"],
+
+["X-linked recessive",
+"# X-linked recessive: carrier females, affected males\n" +
+"p I1 m\n" +
+"p I2 f carrier\n" +
+"u I1 x I2 : II1, II3, II5\n" +
+"\n" +
+"p II1 f carrier\n" +
+"p II2 m\n" +
+"p II3 m aff dead age=\"d.19\"\n" +
+"p II5 f carrier\n" +
+"p II6 m\n" +
+"u II2 x II1 : III1, III2, III3\n" +
+"u II6 x II5 : III4\n" +
+"\n" +
+"p III1 m aff proband\n" +
+"p III2 f carrier\n" +
+"p III3 m\n" +
+"p III4 u preg=\"2 Feb 2026\"\n"],
+
+["Reproductive history",
+"# Pregnancy losses, twins, stillbirth, sibship counts\n" +
+"p I1 m\n" +
+"p I2 f\n" +
+"u I1 x I2 : A1, {mz A2 A3}, A4, A5, A6, A7, A8\n" +
+"\n" +
+"p A1 u sab label=\"10 wk\"\n" +
+"p A2 m\n" +
+"p A3 m\n" +
+"p A4 u top label=\"18 wk\"\n" +
+"p A5 u top=aff label=\"T21\"\n" +
+"p A6 f sb label=\"36 wk\"\n" +
+"p A7 u n=3\n" +
+"p A8 f preg=\"4 Mar 2026\"\n"],
+
+["Remarriage and adoption",
+"# Two unions, one ended; adoption in and out\n" +
+"p I1 m\n" +
+"p I2 f\n" +
+"p I3 f\n" +
+"u I1 x I2 ended : II1, II2\n" +
+"u I1 x I3 : II3\n" +
+"\n" +
+"p II1 m adoptout label=\"adopted out\"\n" +
+"p II2 f\n" +
+"p II3 u\n" +
+"\n" +
+"p J1 m\n" +
+"p J2 f\n" +
+"u J1 x J2 : II4\n" +
+"p II4 m adoptin label=\"adopted in\"\n" +
+"\n" +
+"p K1 m\n" +
+"p K2 f\n" +
+"u K1 x K2 nooffspring\n" +
+"p L1 m\n" +
+"p L2 f\n" +
+"u L1 x L2 infertility=\"azoospermia\"\n"],
+
+["Segmented phenotype",
+"# Four quadrant segments for a multi component phenotype\n" +
+"p I1 m aff=2,0,0,0\n" +
+"p I2 f aff=0,1,0,0\n" +
+"u I1 x I2 : II1, II2, II3\n" +
+"p II1 m aff=2,1,0,0\n" +
+"p II2 f aff=2,1,0,3 proband\n" +
+"p II3 u ncarrier\n"]
+];
+
+/* ==================================================================
+   9. UI
+   ================================================================== */
+var $ = function(id){ return document.getElementById(id); };
+var view = { x:0, y:0, k:1, vb:null }, curSvg = null, curModel = null;
+
+function fit(){
+  if(!curSvg || !view.vb) return;
+  var wrap = $("svgwrap"), W = wrap.clientWidth, H = wrap.clientHeight;
+  var vb = view.vb, k = Math.min(W / vb[2], H / vb[3]);
+  view.k = k;
+  view.x = vb[0] - (W / k - vb[2]) / 2;
+  view.y = vb[1] - (H / k - vb[3]) / 2;
+  applyView();
+}
+function applyView(){
+  if(!curSvg) return;
+  var wrap = $("svgwrap"), W = wrap.clientWidth, H = wrap.clientHeight;
+  curSvg.setAttribute("viewBox", view.x + " " + view.y + " " + (W / view.k) + " " + (H / view.k));
+  curSvg.setAttribute("width", W);
+  curSvg.setAttribute("height", H);
+}
+var _lastPos = null;
+function download(blob, name){
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 400);
+}
+function exportPNG(){
+  if(!_lastSvgText) return;
+  var vb = view.vb, scale = 2;
+  var img = new Image();
+  img.onload = function(){
+    var c = document.createElement("canvas");
+    c.width = vb[2] * scale; c.height = vb[3] * scale;
+    var ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    c.toBlob(function(b){ download(b, "pedigree.png"); });
+  };
+  img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(_lastSvgText);
+}
+var _lastSvgText = "";
+
+/* --- wiring --- */
+(function init(){
+  var sel = $("examples");
+  EXAMPLES.forEach(function(e, i){
+    var o = document.createElement("option"); o.value = i; o.textContent = e[0]; sel.appendChild(o);
+  });
+  sel.onchange = function(){ $("src").value = EXAMPLES[+sel.value][1]; run(); };
+  $("src").value = EXAMPLES[0][1];
+
+  var t = null;
+  $("src").addEventListener("input", function(){ clearTimeout(t); t = setTimeout(run, 180); });
+  $("optNum").onchange = run;
+  $("optIds").onchange = run;
+  $("btnFit").onclick = fit;
+  $("btnSvg").onclick = function(){
+    download(new Blob(['<?xml version="1.0" encoding="UTF-8"?>\n' + _lastSvgText],
+      { type:"image/svg+xml" }), "pedigree.svg");
+  };
+  $("btnPng").onclick = exportPNG;
+  $("btnKey").onclick = function(){ buildKey(); $("keyDlg").showModal(); };
+  $("btnKeyClose").onclick = function(){ $("keyDlg").close(); };
+
+  var stage = $("svgwrap");
+  stage.addEventListener("wheel", function(e){
+    e.preventDefault();
+    var r = stage.getBoundingClientRect();
+    var mx = view.x + (e.clientX - r.left) / view.k;
+    var my = view.y + (e.clientY - r.top) / view.k;
+    var f = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    view.k = Math.max(0.1, Math.min(8, view.k * f));
+    view.x = mx - (e.clientX - r.left) / view.k;
+    view.y = my - (e.clientY - r.top) / view.k;
+    applyView();
+  }, { passive:false });
+  var drag = null;
+  stage.addEventListener("pointerdown", function(e){
+    drag = { x:e.clientX, y:e.clientY, vx:view.x, vy:view.y };
+    stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener("pointermove", function(e){
+    if(!drag) return;
+    view.x = drag.vx - (e.clientX - drag.x) / view.k;
+    view.y = drag.vy - (e.clientY - drag.y) / view.k;
+    applyView();
+  });
+  stage.addEventListener("pointerup", function(){ drag = null; });
+  window.addEventListener("resize", applyView);
+  run();
+})();
+
+function run(){
+  var m = parseDSL($("src").value);
+  var opts = { numbering:$("optNum").checked, showIds:$("optIds").checked };
+  assignGenerations(m);
+  tuneSpacing(m, opts);
+  var pos;
+  try { pos = layout(m); }
+  catch(err){ m.errors.push("layout failed: " + err.message); pos = new Map(); }
+  _lastPos = pos;
+
+  var box = $("errors");
+  box.innerHTML = "";
+  if(m.errors.length){
+    box.className = "";
+    m.errors.slice(0, 40).forEach(function(e){
+      var d = document.createElement("div"); d.textContent = e; box.appendChild(d);
+    });
+  } else {
+    box.className = "ok";
+    var gens = {}, n = 0;
+    m.people.forEach(function(p){ if(!gens[p.gen]){ gens[p.gen] = 1; n++; } });
+    var d = document.createElement("div");
+    d.textContent = m.people.size + " individuals  /  " + m.unions.length + " unions  /  " + n + " generations";
+    box.appendChild(d);
+  }
+
+  curModel = m;
+  var svg = renderSVG(m, pos, opts);
+  _lastSvgText = new XMLSerializer().serializeToString(svg);
+  var wrap = $("svgwrap");
+  wrap.innerHTML = "";
+  wrap.appendChild(svg);
+  curSvg = svg;
+  view.vb = svg.dataset.vb.split(" ").map(Number);
+  fit();
+}
+
+/* usable as a library too */
+window.PED = { parseDSL:parseDSL, assignGenerations:assignGenerations,
+  layout:layout, renderSVG:renderSVG };
+</script>
+</body>
+</html>
